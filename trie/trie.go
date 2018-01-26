@@ -66,6 +66,7 @@ type Database interface {
 // DatabaseReader wraps the Get method of a backing store for the trie.
 type DatabaseReader interface {
 	Get(key []byte) (value []byte, err error)
+	Has(key []byte) (bool, error)
 }
 
 // DatabaseWriter wraps the Put method of a backing store for the trie.
@@ -488,7 +489,7 @@ func (t *Trie) Commit() (root common.Hash, err error) {
 func (t *Trie) CommitTo(db DatabaseWriter) (root common.Hash, err error) {
 	hash, cached, err := t.hashRoot(db)
 	if err != nil {
-		return (common.Hash{}), err
+		return common.Hash{}, err
 	}
 	t.root = cached
 	t.cachegen++

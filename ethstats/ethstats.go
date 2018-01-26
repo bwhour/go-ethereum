@@ -44,9 +44,27 @@ import (
 	"golang.org/x/net/websocket"
 )
 
-// historyUpdateRange is the number of blocks a node should report upon login or
-// history request.
-const historyUpdateRange = 50
+const (
+	// historyUpdateRange is the number of blocks a node should report upon login or
+	// history request.
+	historyUpdateRange = 50
+
+	// txChanSize is the size of channel listening to TxPreEvent.
+	// The number is referenced from the size of tx pool.
+	txChanSize = 4096
+	// chainHeadChanSize is the size of channel listening to ChainHeadEvent.
+	chainHeadChanSize = 10
+)
+
+type txPool interface {
+	// SubscribeTxPreEvent should return an event subscription of
+	// TxPreEvent and send events to the given channel.
+	SubscribeTxPreEvent(chan<- core.TxPreEvent) event.Subscription
+}
+
+type blockChain interface {
+	SubscribeChainHeadEvent(ch chan<- core.ChainHeadEvent) event.Subscription
+}
 
 // Service implements an Ethereum netstats reporting daemon that pushes local
 // chain statistics up to a monitoring server.
@@ -118,16 +136,22 @@ func (s *Service) Stop() error {
 // until termination.
 func (s *Service) loop() {
 	// Subscribe to chain events to execute updates on
-	var emux *event.TypeMux
+	var blockchain blockChain
+	var txpool txPool
 	if s.eth != nil {
-		emux = s.eth.EventMux()
+		blockchain = s.eth.BlockChain()
+		txpool = s.eth.TxPool()
 	} else {
-		emux = s.les.EventMux()
+		blockchain = s.les.BlockChain()
+		txpool = s.les.TxPool()
 	}
-	headSub := emux.Subscribe(core.ChainHeadEvent{})
+
+	chainHeadCh := make(chan core.ChainHeadEvent, chainHeadChanSize)
+	headSub := blockchain.SubscribeChainHeadEvent(chainHeadCh)
 	defer headSub.Unsubscribe()
 
-	txSub := emux.Subscribe(core.TxPreEvent{})
+	txEventCh := make(chan core.TxPreEvent, txChanSize)
+	txSub := txpool.SubscribeTxPreEvent(txEventCh)
 	defer txSub.Unsubscribe()
 
 	// Start a goroutine that exhausts the subsciptions to avoid events piling up
@@ -139,25 +163,18 @@ func (s *Service) loop() {
 	go func() {
 		var lastTx mclock.AbsTime
 
+	HandleLoop:
 		for {
 			select {
 			// Notify of chain head events, but drop if too frequent
-			case head, ok := <-headSub.Chan():
-				if !ok { // node stopped
-					close(quitCh)
-					return
-				}
+			case head := <-chainHeadCh:
 				select {
-				case headCh <- head.Data.(core.ChainHeadEvent).Block:
+				case headCh <- head.Block:
 				default:
 				}
 
 			// Notify of new transaction events, but drop if too frequent
-			case _, ok := <-txSub.Chan():
-				if !ok { // node stopped
-					close(quitCh)
-					return
-				}
+			case <-txEventCh:
 				if time.Duration(mclock.Now()-lastTx) < time.Second {
 					continue
 				}
@@ -167,8 +184,15 @@ func (s *Service) loop() {
 				case txCh <- struct{}{}:
 				default:
 				}
+
+			// node stopped
+			case <-txSub.Err():
+				break HandleLoop
+			case <-headSub.Err():
+				break HandleLoop
 			}
 		}
+		close(quitCh)
 	}()
 	// Loop reporting until termination
 	for {
@@ -350,11 +374,11 @@ func (s *Service) login(conn *websocket.Conn) error {
 
 	var network, protocol string
 	if info := infos.Protocols["eth"]; info != nil {
-		network = fmt.Sprintf("%d", info.(*eth.EthNodeInfo).Network)
+		network = fmt.Sprintf("%d", info.(*eth.NodeInfo).Network)
 		protocol = fmt.Sprintf("eth/%d", eth.ProtocolVersions[0])
 	} else {
-		network = fmt.Sprintf("%d", infos.Protocols["les"].(*eth.EthNodeInfo).Network)
-		protocol = fmt.Sprintf("les/%d", les.ProtocolVersions[0])
+		network = fmt.Sprintf("%d", infos.Protocols["les"].(*les.NodeInfo).Network)
+		protocol = fmt.Sprintf("les/%d", les.ClientProtocolVersions[0])
 	}
 	auth := &authMsg{
 		Id: s.node,
@@ -449,8 +473,8 @@ type blockStats struct {
 	ParentHash common.Hash    `json:"parentHash"`
 	Timestamp  *big.Int       `json:"timestamp"`
 	Miner      common.Address `json:"miner"`
-	GasUsed    *big.Int       `json:"gasUsed"`
-	GasLimit   *big.Int       `json:"gasLimit"`
+	GasUsed    uint64         `json:"gasUsed"`
+	GasLimit   uint64         `json:"gasLimit"`
 	Diff       string         `json:"difficulty"`
 	TotalDiff  string         `json:"totalDifficulty"`
 	Txs        []txStats      `json:"transactions"`
@@ -535,8 +559,8 @@ func (s *Service) assembleBlockStats(block *types.Block) *blockStats {
 		ParentHash: header.ParentHash,
 		Timestamp:  header.Time,
 		Miner:      author,
-		GasUsed:    new(big.Int).Set(header.GasUsed),
-		GasLimit:   new(big.Int).Set(header.GasLimit),
+		GasUsed:    header.GasUsed,
+		GasLimit:   header.GasLimit,
 		Diff:       header.Difficulty.String(),
 		TotalDiff:  td.String(),
 		Txs:        txs,
@@ -589,6 +613,7 @@ func (s *Service) reportHistory(conn *websocket.Conn, list []uint64) error {
 		}
 		// Ran out of blocks, cut the report short and send
 		history = history[len(history)-i:]
+		break
 	}
 	// Assemble the history report and send it to the server
 	if len(history) > 0 {

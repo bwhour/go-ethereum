@@ -19,6 +19,7 @@ package main
 import (
 	"encoding/json"
 	"io"
+	"math/big"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -35,12 +36,16 @@ func NewJSONLogger(cfg *vm.LogConfig, writer io.Writer) *JSONLogger {
 	return &JSONLogger{json.NewEncoder(writer), cfg}
 }
 
+func (l *JSONLogger) CaptureStart(from common.Address, to common.Address, create bool, input []byte, gas uint64, value *big.Int) error {
+	return nil
+}
+
 // CaptureState outputs state information on the logger.
 func (l *JSONLogger) CaptureState(env *vm.EVM, pc uint64, op vm.OpCode, gas, cost uint64, memory *vm.Memory, stack *vm.Stack, contract *vm.Contract, depth int, err error) error {
 	log := vm.StructLog{
 		Pc:         pc,
 		Op:         op,
-		Gas:        gas + cost,
+		Gas:        gas,
 		GasCost:    cost,
 		MemorySize: memory.Len(),
 		Storage:    nil,
@@ -56,12 +61,21 @@ func (l *JSONLogger) CaptureState(env *vm.EVM, pc uint64, op vm.OpCode, gas, cos
 	return l.encoder.Encode(log)
 }
 
+// CaptureFault outputs state information on the logger.
+func (l *JSONLogger) CaptureFault(env *vm.EVM, pc uint64, op vm.OpCode, gas, cost uint64, memory *vm.Memory, stack *vm.Stack, contract *vm.Contract, depth int, err error) error {
+	return nil
+}
+
 // CaptureEnd is triggered at end of execution.
-func (l *JSONLogger) CaptureEnd(output []byte, gasUsed uint64, t time.Duration) error {
+func (l *JSONLogger) CaptureEnd(output []byte, gasUsed uint64, t time.Duration, err error) error {
 	type endLog struct {
 		Output  string              `json:"output"`
 		GasUsed math.HexOrDecimal64 `json:"gasUsed"`
 		Time    time.Duration       `json:"time"`
+		Err     string              `json:"error,omitempty"`
 	}
-	return l.encoder.Encode(endLog{common.Bytes2Hex(output), math.HexOrDecimal64(gasUsed), t})
+	if err != nil {
+		return l.encoder.Encode(endLog{common.Bytes2Hex(output), math.HexOrDecimal64(gasUsed), t, err.Error()})
+	}
+	return l.encoder.Encode(endLog{common.Bytes2Hex(output), math.HexOrDecimal64(gasUsed), t, ""})
 }
