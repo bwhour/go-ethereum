@@ -41,7 +41,7 @@ var dashboardContent = `
 		<meta http-equiv="X-UA-Compatible" content="IE=edge">
 		<meta name="viewport" content="width=device-width, initial-scale=1">
 
-		<title>{{.NetworkTitle}}: Ethereum Testnet</title>
+		<title>{{.NetworkTitle}}: Network Dashboard</title>
 
 		<link href="https://cdnjs.cloudflare.com/ajax/libs/twitter-bootstrap/3.3.7/css/bootstrap.min.css" rel="stylesheet">
 		<link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css" rel="stylesheet">
@@ -608,30 +608,31 @@ func deployDashboard(client *sshClient, network string, conf *config, config *da
 		bootPython[i] = "'" + boot + "'"
 	}
 	template.Must(template.New("").Parse(dashboardContent)).Execute(indexfile, map[string]interface{}{
-		"Network":          network,
-		"NetworkID":        conf.Genesis.Config.ChainId,
-		"NetworkTitle":     strings.Title(network),
-		"EthstatsPage":     config.ethstats,
-		"ExplorerPage":     config.explorer,
-		"WalletPage":       config.wallet,
-		"FaucetPage":       config.faucet,
-		"GethGenesis":      network + ".json",
-		"Bootnodes":        conf.bootnodes,
-		"BootnodesFlat":    strings.Join(conf.bootnodes, ","),
-		"Ethstats":         statsLogin,
-		"Ethash":           conf.Genesis.Config.Ethash != nil,
-		"CppGenesis":       network + "-cpp.json",
-		"CppBootnodes":     strings.Join(bootCpp, " "),
-		"HarmonyGenesis":   network + "-harmony.json",
-		"HarmonyBootnodes": strings.Join(bootHarmony, " "),
-		"ParityGenesis":    network + "-parity.json",
-		"PythonGenesis":    network + "-python.json",
-		"PythonBootnodes":  strings.Join(bootPython, ","),
-		"Homestead":        conf.Genesis.Config.HomesteadBlock,
-		"Tangerine":        conf.Genesis.Config.EIP150Block,
-		"Spurious":         conf.Genesis.Config.EIP155Block,
-		"Byzantium":        conf.Genesis.Config.ByzantiumBlock,
-		"Constantinople":   conf.Genesis.Config.ConstantinopleBlock,
+		"Network":           network,
+		"NetworkID":         conf.Genesis.Config.ChainID,
+		"NetworkTitle":      strings.Title(network),
+		"EthstatsPage":      config.ethstats,
+		"ExplorerPage":      config.explorer,
+		"WalletPage":        config.wallet,
+		"FaucetPage":        config.faucet,
+		"GethGenesis":       network + ".json",
+		"Bootnodes":         conf.bootnodes,
+		"BootnodesFlat":     strings.Join(conf.bootnodes, ","),
+		"Ethstats":          statsLogin,
+		"Ethash":            conf.Genesis.Config.Ethash != nil,
+		"CppGenesis":        network + "-cpp.json",
+		"CppBootnodes":      strings.Join(bootCpp, " "),
+		"HarmonyGenesis":    network + "-harmony.json",
+		"HarmonyBootnodes":  strings.Join(bootHarmony, " "),
+		"ParityGenesis":     network + "-parity.json",
+		"PythonGenesis":     network + "-python.json",
+		"PythonBootnodes":   strings.Join(bootPython, ","),
+		"Homestead":         conf.Genesis.Config.HomesteadBlock,
+		"Tangerine":         conf.Genesis.Config.EIP150Block,
+		"Spurious":          conf.Genesis.Config.EIP155Block,
+		"Byzantium":         conf.Genesis.Config.ByzantiumBlock,
+		"Constantinople":    conf.Genesis.Config.ConstantinopleBlock,
+		"ConstantinopleFix": conf.Genesis.Config.PetersburgBlock,
 	})
 	files[filepath.Join(workdir, "index.html")] = indexfile.Bytes()
 
@@ -640,7 +641,7 @@ func deployDashboard(client *sshClient, network string, conf *config, config *da
 	files[filepath.Join(workdir, network+".json")] = genesis
 
 	if conf.Genesis.Config.Ethash != nil {
-		cppSpec, err := newCppEthereumGenesisSpec(network, conf.Genesis)
+		cppSpec, err := newAlethGenesisSpec(network, conf.Genesis)
 		if err != nil {
 			return nil, err
 		}
@@ -678,12 +679,12 @@ func deployDashboard(client *sshClient, network string, conf *config, config *da
 
 	// Build and deploy the dashboard service
 	if nocache {
-		return nil, client.Stream(fmt.Sprintf("cd %s && docker-compose -p %s build --pull --no-cache && docker-compose -p %s up -d --force-recreate", workdir, network, network))
+		return nil, client.Stream(fmt.Sprintf("cd %s && docker-compose -p %s build --pull --no-cache && docker-compose -p %s up -d --force-recreate --timeout 60", workdir, network, network))
 	}
-	return nil, client.Stream(fmt.Sprintf("cd %s && docker-compose -p %s up -d --build --force-recreate", workdir, network))
+	return nil, client.Stream(fmt.Sprintf("cd %s && docker-compose -p %s up -d --build --force-recreate --timeout 60", workdir, network))
 }
 
-// dashboardInfos is returned from an dashboard status check to allow reporting
+// dashboardInfos is returned from a dashboard status check to allow reporting
 // various configuration parameters.
 type dashboardInfos struct {
 	host    string

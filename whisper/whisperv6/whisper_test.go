@@ -75,12 +75,8 @@ func TestWhisperBasic(t *testing.T) {
 	if len(mail) != 0 {
 		t.Fatalf("failed w.Envelopes().")
 	}
-	m := w.Messages("non-existent")
-	if len(m) != 0 {
-		t.Fatalf("failed w.Messages.")
-	}
 
-	derived := pbkdf2.Key([]byte(peerID), nil, 65356, aesKeyLength, sha256.New)
+	derived := pbkdf2.Key(peerID, nil, 65356, aesKeyLength, sha256.New)
 	if !validateDataIntegrity(derived, aesKeyLength) {
 		t.Fatalf("failed validateSymmetricKey with param = %v.", derived)
 	}
@@ -266,13 +262,12 @@ func TestWhisperIdentityManagement(t *testing.T) {
 func TestWhisperSymKeyManagement(t *testing.T) {
 	InitSingleTest()
 
-	var err error
-	var k1, k2 []byte
-	w := New(&DefaultConfig)
-	id1 := string("arbitrary-string-1")
-	id2 := string("arbitrary-string-2")
-
-	id1, err = w.GenerateSymKey()
+	var (
+		k1, k2 []byte
+		w      = New(&DefaultConfig)
+		id2    = string("arbitrary-string-2")
+	)
+	id1, err := w.GenerateSymKey()
 	if err != nil {
 		t.Fatalf("failed GenerateSymKey with seed %d: %s.", seed, err)
 	}
@@ -469,27 +464,34 @@ func TestExpiry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed generateMessageParams with seed %d: %s.", seed, err)
 	}
-
 	params.TTL = 1
-	msg, err := NewSentMessage(params)
-	if err != nil {
-		t.Fatalf("failed to create new message with seed %d: %s.", seed, err)
-	}
-	env, err := msg.Wrap(params)
-	if err != nil {
-		t.Fatalf("failed Wrap with seed %d: %s.", seed, err)
-	}
 
-	err = w.Send(env)
-	if err != nil {
-		t.Fatalf("failed to send envelope with seed %d: %s.", seed, err)
+	messagesCount := 5
+
+	// Send a few messages one after another. Due to low PoW and expiration buckets
+	// with one second resolution, it covers a case when there are multiple items
+	// in a single expiration bucket.
+	for i := 0; i < messagesCount; i++ {
+		msg, err := NewSentMessage(params)
+		if err != nil {
+			t.Fatalf("failed to create new message with seed %d: %s.", seed, err)
+		}
+		env, err := msg.Wrap(params)
+		if err != nil {
+			t.Fatalf("failed Wrap with seed %d: %s.", seed, err)
+		}
+
+		err = w.Send(env)
+		if err != nil {
+			t.Fatalf("failed to send envelope with seed %d: %s.", seed, err)
+		}
 	}
 
 	// wait till received or timeout
 	var received, expired bool
 	for j := 0; j < 20; j++ {
 		time.Sleep(100 * time.Millisecond)
-		if len(w.Envelopes()) > 0 {
+		if len(w.Envelopes()) == messagesCount {
 			received = true
 			break
 		}
@@ -593,7 +595,7 @@ func TestCustomization(t *testing.T) {
 	}
 
 	// check w.messages()
-	id, err := w.Subscribe(f)
+	_, err = w.Subscribe(f)
 	if err != nil {
 		t.Fatalf("failed subscribe with seed %d: %s.", seed, err)
 	}
@@ -601,11 +603,6 @@ func TestCustomization(t *testing.T) {
 	mail := f.Retrieve()
 	if len(mail) > 0 {
 		t.Fatalf("received premature mail")
-	}
-
-	mail = w.Messages(id)
-	if len(mail) != 2 {
-		t.Fatalf("failed to get whisper messages")
 	}
 }
 
@@ -835,11 +832,11 @@ func TestSymmetricSendKeyMismatch(t *testing.T) {
 func TestBloom(t *testing.T) {
 	topic := TopicType{0, 0, 255, 6}
 	b := TopicToBloom(topic)
-	x := make([]byte, bloomFilterSize)
+	x := make([]byte, BloomFilterSize)
 	x[0] = byte(1)
 	x[32] = byte(1)
-	x[bloomFilterSize-1] = byte(128)
-	if !bloomFilterMatch(x, b) || !bloomFilterMatch(b, x) {
+	x[BloomFilterSize-1] = byte(128)
+	if !BloomFilterMatch(x, b) || !BloomFilterMatch(b, x) {
 		t.Fatalf("bloom filter does not match the mask")
 	}
 
@@ -851,11 +848,11 @@ func TestBloom(t *testing.T) {
 	if err != nil {
 		t.Fatalf("math rand error")
 	}
-	if !bloomFilterMatch(b, b) {
+	if !BloomFilterMatch(b, b) {
 		t.Fatalf("bloom filter does not match self")
 	}
 	x = addBloom(x, b)
-	if !bloomFilterMatch(x, b) {
+	if !BloomFilterMatch(x, b) {
 		t.Fatalf("bloom filter does not match combined bloom")
 	}
 	if !isFullNode(nil) {
@@ -865,16 +862,16 @@ func TestBloom(t *testing.T) {
 	if isFullNode(x) {
 		t.Fatalf("isFullNode false positive")
 	}
-	for i := 0; i < bloomFilterSize; i++ {
+	for i := 0; i < BloomFilterSize; i++ {
 		b[i] = byte(255)
 	}
 	if !isFullNode(b) {
 		t.Fatalf("isFullNode false negative")
 	}
-	if bloomFilterMatch(x, b) {
+	if BloomFilterMatch(x, b) {
 		t.Fatalf("bloomFilterMatch false positive")
 	}
-	if !bloomFilterMatch(b, x) {
+	if !BloomFilterMatch(b, x) {
 		t.Fatalf("bloomFilterMatch false negative")
 	}
 
@@ -888,7 +885,7 @@ func TestBloom(t *testing.T) {
 		t.Fatalf("failed to set bloom filter: %s", err)
 	}
 	f = w.BloomFilter()
-	if !bloomFilterMatch(f, x) || !bloomFilterMatch(x, f) {
+	if !BloomFilterMatch(f, x) || !BloomFilterMatch(x, f) {
 		t.Fatalf("retireved wrong bloom filter")
 	}
 }
