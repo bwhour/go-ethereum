@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
 
-package bind
+package abi
 
 import (
 	"encoding/binary"
@@ -23,13 +23,12 @@ import (
 	"math/big"
 	"reflect"
 
-	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 )
 
-// makeTopics converts a filter query argument list into a filter topic set.
-func makeTopics(query ...[]interface{}) ([][]common.Hash, error) {
+// MakeTopics converts a filter query argument list into a filter topic set.
+func MakeTopics(query ...[]interface{}) ([][]common.Hash, error) {
 	topics := make([][]common.Hash, len(query))
 	for i, filter := range query {
 		for _, rule := range filter {
@@ -49,17 +48,13 @@ func makeTopics(query ...[]interface{}) ([][]common.Hash, error) {
 					topic[common.HashLength-1] = 1
 				}
 			case int8:
-				blob := big.NewInt(int64(rule)).Bytes()
-				copy(topic[common.HashLength-len(blob):], blob)
+				copy(topic[:], genIntType(int64(rule), 1))
 			case int16:
-				blob := big.NewInt(int64(rule)).Bytes()
-				copy(topic[common.HashLength-len(blob):], blob)
+				copy(topic[:], genIntType(int64(rule), 2))
 			case int32:
-				blob := big.NewInt(int64(rule)).Bytes()
-				copy(topic[common.HashLength-len(blob):], blob)
+				copy(topic[:], genIntType(int64(rule), 4))
 			case int64:
-				blob := big.NewInt(rule).Bytes()
-				copy(topic[common.HashLength-len(blob):], blob)
+				copy(topic[:], genIntType(rule, 8))
 			case uint8:
 				blob := new(big.Int).SetUint64(uint64(rule)).Bytes()
 				copy(topic[common.HashLength-len(blob):], blob)
@@ -103,19 +98,32 @@ func makeTopics(query ...[]interface{}) ([][]common.Hash, error) {
 	return topics, nil
 }
 
-// parseTopics converts the indexed topic fields into actual log field values.
-func parseTopics(out interface{}, fields abi.Arguments, topics []common.Hash) error {
+func genIntType(rule int64, size uint) []byte {
+	var topic [common.HashLength]byte
+	if rule < 0 {
+		// if a rule is negative, we need to put it into two's complement.
+		// extended to common.Hashlength bytes.
+		topic = [common.HashLength]byte{255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255}
+	}
+	for i := uint(0); i < size; i++ {
+		topic[common.HashLength-i-1] = byte(rule >> (i * 8))
+	}
+	return topic[:]
+}
+
+// ParseTopics converts the indexed topic fields into actual log field values.
+func ParseTopics(out interface{}, fields Arguments, topics []common.Hash) error {
 	return parseTopicWithSetter(fields, topics,
-		func(arg abi.Argument, reconstr interface{}) {
-			field := reflect.ValueOf(out).Elem().FieldByName(capitalise(arg.Name))
+		func(arg Argument, reconstr interface{}) {
+			field := reflect.ValueOf(out).Elem().FieldByName(ToCamelCase(arg.Name))
 			field.Set(reflect.ValueOf(reconstr))
 		})
 }
 
-// parseTopicsIntoMap converts the indexed topic field-value pairs into map key-value pairs
-func parseTopicsIntoMap(out map[string]interface{}, fields abi.Arguments, topics []common.Hash) error {
+// ParseTopicsIntoMap converts the indexed topic field-value pairs into map key-value pairs
+func ParseTopicsIntoMap(out map[string]interface{}, fields Arguments, topics []common.Hash) error {
 	return parseTopicWithSetter(fields, topics,
-		func(arg abi.Argument, reconstr interface{}) {
+		func(arg Argument, reconstr interface{}) {
 			out[arg.Name] = reconstr
 		})
 }
@@ -125,7 +133,7 @@ func parseTopicsIntoMap(out map[string]interface{}, fields abi.Arguments, topics
 //
 // Note, dynamic types cannot be reconstructed since they get mapped to Keccak256
 // hashes as the topic value!
-func parseTopicWithSetter(fields abi.Arguments, topics []common.Hash, setter func(abi.Argument, interface{})) error {
+func parseTopicWithSetter(fields Arguments, topics []common.Hash, setter func(Argument, interface{})) error {
 	// Sanity check that the fields and topics match up
 	if len(fields) != len(topics) {
 		return errors.New("topic/field count mismatch")
@@ -137,13 +145,13 @@ func parseTopicWithSetter(fields abi.Arguments, topics []common.Hash, setter fun
 		}
 		var reconstr interface{}
 		switch arg.Type.T {
-		case abi.TupleTy:
+		case TupleTy:
 			return errors.New("tuple type in topic reconstruction")
-		case abi.StringTy, abi.BytesTy, abi.SliceTy, abi.ArrayTy:
+		case StringTy, BytesTy, SliceTy, ArrayTy:
 			// Array types (including strings and bytes) have their keccak256 hashes stored in the topic- not a hash
 			// whose bytes can be decoded to the actual value- so the best we can do is retrieve that hash
 			reconstr = topics[i]
-		case abi.FunctionTy:
+		case FunctionTy:
 			if garbage := binary.BigEndian.Uint64(topics[i][0:8]); garbage != 0 {
 				return fmt.Errorf("bind: got improperly encoded function type, got %v", topics[i].Bytes())
 			}
@@ -152,7 +160,7 @@ func parseTopicWithSetter(fields abi.Arguments, topics []common.Hash, setter fun
 			reconstr = tmp
 		default:
 			var err error
-			reconstr, err = abi.ToGoType(0, arg.Type, topics[i].Bytes())
+			reconstr, err = toGoType(0, arg.Type, topics[i].Bytes())
 			if err != nil {
 				return err
 			}

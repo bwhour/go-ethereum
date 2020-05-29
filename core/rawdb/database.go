@@ -41,10 +41,10 @@ type freezerdb struct {
 // the slow ancient tables.
 func (frdb *freezerdb) Close() error {
 	var errs []error
-	if err := frdb.KeyValueStore.Close(); err != nil {
+	if err := frdb.AncientStore.Close(); err != nil {
 		errs = append(errs, err)
 	}
-	if err := frdb.AncientStore.Close(); err != nil {
+	if err := frdb.KeyValueStore.Close(); err != nil {
 		errs = append(errs, err)
 	}
 	if len(errs) != 0 {
@@ -221,7 +221,7 @@ func NewLevelDBDatabaseWithFreezer(file string, cache int, handles int, freezer 
 // InspectDatabase traverses the entire database and checks the size
 // of all different categories of data.
 func InspectDatabase(db ethdb.Database) error {
-	it := db.NewIterator()
+	it := db.NewIterator(nil, nil)
 	defer it.Release()
 
 	var (

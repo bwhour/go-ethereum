@@ -1069,7 +1069,7 @@ func testInvalidHeaderRollback(t *testing.T, protocol int, mode SyncMode) {
 	}
 }
 
-// Tests that a peer advertising an high TD doesn't get to stall the downloader
+// Tests that a peer advertising a high TD doesn't get to stall the downloader
 // afterwards by not sending any useful hashes.
 func TestHighTDStarvationAttack62(t *testing.T)      { testHighTDStarvationAttack(t, 62, FullSync) }
 func TestHighTDStarvationAttack63Full(t *testing.T)  { testHighTDStarvationAttack(t, 63, FullSync) }
@@ -1126,7 +1126,7 @@ func testBlockHeaderAttackerDropping(t *testing.T, protocol int) {
 	chain := testChainBase.shorten(1)
 
 	for i, tt := range tests {
-		// Register a new peer and ensure it's presence
+		// Register a new peer and ensure its presence
 		id := fmt.Sprintf("test %d", i)
 		if err := tester.newPeer(id, protocol, chain); err != nil {
 			t.Fatalf("test %d: failed to register new peer: %v", i, err)
