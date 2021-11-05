@@ -39,6 +39,22 @@ func TestDefaultGenesisBlock(t *testing.T) {
 	if block.Hash() != params.RopstenGenesisHash {
 		t.Errorf("wrong ropsten genesis hash, got %v, want %v", block.Hash(), params.RopstenGenesisHash)
 	}
+	block = DefaultRinkebyGenesisBlock().ToBlock(nil)
+	if block.Hash() != params.RinkebyGenesisHash {
+		t.Errorf("wrong rinkeby genesis hash, got %v, want %v", block.Hash(), params.RinkebyGenesisHash)
+	}
+	block = DefaultGoerliGenesisBlock().ToBlock(nil)
+	if block.Hash() != params.GoerliGenesisHash {
+		t.Errorf("wrong goerli genesis hash, got %v, want %v", block.Hash(), params.GoerliGenesisHash)
+	}
+}
+
+func TestInvalidCliqueConfig(t *testing.T) {
+	block := DefaultGoerliGenesisBlock()
+	block.ExtraData = []byte{}
+	if _, err := block.Commit(nil); err == nil {
+		t.Fatal("Expected error on invalid clique config")
+	}
 }
 
 func TestSetupGenesis(t *testing.T) {
@@ -160,5 +176,66 @@ func TestSetupGenesis(t *testing.T) {
 				t.Errorf("%s: block in DB has hash %s, want %s", test.name, stored.Hash(), test.wantHash)
 			}
 		}
+	}
+}
+
+// TestGenesisHashes checks the congruity of default genesis data to corresponding hardcoded genesis hash values.
+func TestGenesisHashes(t *testing.T) {
+	cases := []struct {
+		genesis *Genesis
+		hash    common.Hash
+	}{
+		{
+			genesis: DefaultGenesisBlock(),
+			hash:    params.MainnetGenesisHash,
+		},
+		{
+			genesis: DefaultGoerliGenesisBlock(),
+			hash:    params.GoerliGenesisHash,
+		},
+		{
+			genesis: DefaultRopstenGenesisBlock(),
+			hash:    params.RopstenGenesisHash,
+		},
+		{
+			genesis: DefaultRinkebyGenesisBlock(),
+			hash:    params.RinkebyGenesisHash,
+		},
+	}
+	for i, c := range cases {
+		b := c.genesis.MustCommit(rawdb.NewMemoryDatabase())
+		if got := b.Hash(); got != c.hash {
+			t.Errorf("case: %d, want: %s, got: %s", i, c.hash.Hex(), got.Hex())
+		}
+	}
+}
+
+func TestGenesis_Commit(t *testing.T) {
+	genesis := &Genesis{
+		BaseFee: big.NewInt(params.InitialBaseFee),
+		Config:  params.TestChainConfig,
+		// difficulty is nil
+	}
+
+	db := rawdb.NewMemoryDatabase()
+	genesisBlock, err := genesis.Commit(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if genesis.Difficulty != nil {
+		t.Fatalf("assumption wrong")
+	}
+
+	// This value should have been set as default in the ToBlock method.
+	if genesisBlock.Difficulty().Cmp(params.GenesisDifficulty) != 0 {
+		t.Errorf("assumption wrong: want: %d, got: %v", params.GenesisDifficulty, genesisBlock.Difficulty())
+	}
+
+	// Expect the stored total difficulty to be the difficulty of the genesis block.
+	stored := rawdb.ReadTd(db, genesisBlock.Hash(), genesisBlock.NumberU64())
+
+	if stored.Cmp(genesisBlock.Difficulty()) != 0 {
+		t.Errorf("inequal difficulty; stored: %v, genesisBlock: %v", stored, genesisBlock.Difficulty())
 	}
 }
