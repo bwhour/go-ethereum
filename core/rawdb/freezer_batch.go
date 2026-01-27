@@ -18,23 +18,30 @@ package rawdb
 
 import (
 	"fmt"
-	"sync/atomic"
+	"math"
+	"time"
 
-	"github.com/ethereum/go-ethereum/common/math"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/golang/snappy"
 )
 
-// This is the maximum amount of data that will be buffered in memory
-// for a single freezer table batch.
-const freezerBatchBufferLimit = 2 * 1024 * 1024
+const (
+	// This is the maximum amount of data that will be buffered in memory
+	// for a single freezer table batch.
+	freezerBatchBufferLimit = 2 * 1024 * 1024
+
+	// freezerTableFlushThreshold defines the threshold for triggering a freezer
+	// table sync operation. If the number of accumulated uncommitted items exceeds
+	// this value, a sync will be scheduled.
+	freezerTableFlushThreshold = 512
+)
 
 // freezerBatch is a write operation of multiple items on a freezer.
 type freezerBatch struct {
 	tables map[string]*freezerTableBatch
 }
 
-func newFreezerBatch(f *freezer) *freezerBatch {
+func newFreezerBatch(f *Freezer) *freezerBatch {
 	batch := &freezerBatch{tables: make(map[string]*freezerTableBatch, len(f.tables))}
 	for kind, table := range f.tables {
 		batch.tables[kind] = table.newBatch()
@@ -44,12 +51,18 @@ func newFreezerBatch(f *freezer) *freezerBatch {
 
 // Append adds an RLP-encoded item of the given kind.
 func (batch *freezerBatch) Append(kind string, num uint64, item interface{}) error {
-	return batch.tables[kind].Append(num, item)
+	if table := batch.tables[kind]; table != nil {
+		return table.Append(num, item)
+	}
+	return errUnknownTable
 }
 
 // AppendRaw adds an item of the given kind.
 func (batch *freezerBatch) AppendRaw(kind string, num uint64, item []byte) error {
-	return batch.tables[kind].AppendRaw(num, item)
+	if table := batch.tables[kind]; table != nil {
+		return table.AppendRaw(num, item)
+	}
+	return errUnknownTable
 }
 
 // reset initializes the batch.
@@ -96,7 +109,7 @@ type freezerTableBatch struct {
 // newBatch creates a new batch for the freezer table.
 func (t *freezerTable) newBatch() *freezerTableBatch {
 	batch := &freezerTableBatch{t: t}
-	if !t.noCompression {
+	if !t.config.noSnappy {
 		batch.sb = new(snappyBuffer)
 	}
 	batch.reset()
@@ -107,7 +120,7 @@ func (t *freezerTable) newBatch() *freezerTableBatch {
 func (batch *freezerTableBatch) reset() {
 	batch.dataBuffer = batch.dataBuffer[:0]
 	batch.indexBuffer = batch.indexBuffer[:0]
-	batch.curItem = atomic.LoadUint64(&batch.t.items)
+	batch.curItem = batch.t.items.Load()
 	batch.totalBytes = 0
 }
 
@@ -181,9 +194,10 @@ func (batch *freezerTableBatch) maybeCommit() error {
 	return nil
 }
 
-// commit writes the batched items to the backing freezerTable.
+// commit writes the batched items to the backing freezerTable. Note index
+// file isn't fsync'd after the file write, the recent write can be lost
+// after the power failure.
 func (batch *freezerTableBatch) commit() error {
-	// Write data.
 	_, err := batch.t.head.Write(batch.dataBuffer)
 	if err != nil {
 		return err
@@ -191,7 +205,6 @@ func (batch *freezerTableBatch) commit() error {
 	dataSize := int64(len(batch.dataBuffer))
 	batch.dataBuffer = batch.dataBuffer[:0]
 
-	// Write index.
 	_, err = batch.t.index.Write(batch.indexBuffer)
 	if err != nil {
 		return err
@@ -201,11 +214,20 @@ func (batch *freezerTableBatch) commit() error {
 
 	// Update headBytes of table.
 	batch.t.headBytes += dataSize
-	atomic.StoreUint64(&batch.t.items, batch.curItem)
+	items := batch.curItem - batch.t.items.Load()
+	batch.t.items.Store(batch.curItem)
 
 	// Update metrics.
 	batch.t.sizeGauge.Inc(dataSize + indexSize)
 	batch.t.writeMeter.Mark(dataSize + indexSize)
+
+	// Periodically sync the table, todo (rjl493456442) make it configurable?
+	batch.t.uncommitted += items
+	if batch.t.uncommitted > freezerTableFlushThreshold && time.Since(batch.t.lastSync) > 30*time.Second {
+		batch.t.uncommitted = 0
+		batch.t.lastSync = time.Now()
+		return batch.t.Sync()
+	}
 	return nil
 }
 

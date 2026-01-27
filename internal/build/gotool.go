@@ -24,6 +24,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/ethereum/go-ethereum/internal/download"
 )
 
 type GoToolchain struct {
@@ -53,31 +55,10 @@ func (g *GoToolchain) Go(command string, args ...string) *exec.Cmd {
 	} else if os.Getenv("CC") != "" {
 		tool.Env = append(tool.Env, "CC="+os.Getenv("CC"))
 	}
-	return tool
-}
+	// CKZG by default is not portable, append the necessary build flags to make
+	// it not rely on modern CPU instructions and enable linking against.
+	tool.Env = append(tool.Env, "CGO_CFLAGS=-O2 -g -D__BLST_PORTABLE__")
 
-// Install creates an invocation of 'go install'. The command is configured to output
-// executables to the given 'gobin' directory.
-//
-// This can be used to install auxiliary build tools without modifying the local go.mod and
-// go.sum files. To install tools which are not required by go.mod, ensure that all module
-// paths in 'args' contain a module version suffix (e.g. "...@latest").
-func (g *GoToolchain) Install(gobin string, args ...string) *exec.Cmd {
-	if !filepath.IsAbs(gobin) {
-		panic("GOBIN must be an absolute path")
-	}
-	tool := g.goTool("install")
-	tool.Env = append(tool.Env, "GOBIN="+gobin)
-	tool.Args = append(tool.Args, "-mod=readonly")
-	tool.Args = append(tool.Args, args...)
-
-	// Ensure GOPATH is set because go install seems to absolutely require it. This uses
-	// 'go env' because it resolves the default value when GOPATH is not set in the
-	// environment. Ignore errors running go env and leave any complaining about GOPATH to
-	// the install command.
-	pathTool := g.goTool("env", "GOPATH")
-	output, _ := pathTool.Output()
-	tool.Env = append(tool.Env, "GOPATH="+string(output))
 	return tool
 }
 
@@ -85,7 +66,7 @@ func (g *GoToolchain) goTool(command string, args ...string) *exec.Cmd {
 	if g.Root == "" {
 		g.Root = runtime.GOROOT()
 	}
-	tool := exec.Command(filepath.Join(g.Root, "bin", "go"), command)
+	tool := exec.Command(filepath.Join(g.Root, "bin", "go"), command) // nolint: gosec
 	tool.Args = append(tool.Args, args...)
 	tool.Env = append(tool.Env, "GOROOT="+g.Root)
 
@@ -105,7 +86,11 @@ func (g *GoToolchain) goTool(command string, args ...string) *exec.Cmd {
 
 // DownloadGo downloads the Go binary distribution and unpacks it into a temporary
 // directory. It returns the GOROOT of the unpacked toolchain.
-func DownloadGo(csdb *ChecksumDB, version string) string {
+func DownloadGo(csdb *download.ChecksumDB) string {
+	version, err := csdb.FindVersion("golang")
+	if err != nil {
+		log.Fatal(err)
+	}
 	// Shortcut: if the Go version that runs this script matches the
 	// requested version exactly, there is no need to download anything.
 	activeGo := strings.TrimPrefix(runtime.Version(), "go")

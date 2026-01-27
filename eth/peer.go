@@ -17,8 +17,7 @@
 package eth
 
 import (
-	"math/big"
-
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/eth/protocols/eth"
 	"github.com/ethereum/go-ethereum/eth/protocols/snap"
 )
@@ -26,27 +25,33 @@ import (
 // ethPeerInfo represents a short summary of the `eth` sub-protocol metadata known
 // about a connected peer.
 type ethPeerInfo struct {
-	Version    uint     `json:"version"`    // Ethereum protocol version negotiated
-	Difficulty *big.Int `json:"difficulty"` // Total difficulty of the peer's blockchain
-	Head       string   `json:"head"`       // Hex hash of the peer's best owned block
+	Version uint `json:"version"` // Ethereum protocol version negotiated
+	*peerBlockRange
+}
+
+type peerBlockRange struct {
+	Earliest   uint64      `json:"earliestBlock"`
+	Latest     uint64      `json:"latestBlock"`
+	LatestHash common.Hash `json:"latestBlockHash"`
 }
 
 // ethPeer is a wrapper around eth.Peer to maintain a few extra metadata.
 type ethPeer struct {
 	*eth.Peer
-	snapExt  *snapPeer     // Satellite `snap` connection
-	snapWait chan struct{} // Notification channel for snap connections
+	snapExt *snapPeer // Satellite `snap` connection
 }
 
 // info gathers and returns some `eth` protocol metadata known about a peer.
 func (p *ethPeer) info() *ethPeerInfo {
-	hash, td := p.Head()
-
-	return &ethPeerInfo{
-		Version:    p.Version(),
-		Difficulty: td,
-		Head:       hash.Hex(),
+	info := &ethPeerInfo{Version: p.Version()}
+	if br := p.BlockRange(); br != nil {
+		info.peerBlockRange = &peerBlockRange{
+			Earliest:   br.EarliestBlock,
+			Latest:     br.LatestBlock,
+			LatestHash: br.LatestBlockHash,
+		}
 	}
+	return info
 }
 
 // snapPeerInfo represents a short summary of the `snap` sub-protocol metadata known

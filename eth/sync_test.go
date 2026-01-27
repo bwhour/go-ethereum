@@ -17,11 +17,10 @@
 package eth
 
 import (
-	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/ethereum/go-ethereum/eth/downloader"
+	"github.com/ethereum/go-ethereum/eth/ethconfig"
 	"github.com/ethereum/go-ethereum/eth/protocols/eth"
 	"github.com/ethereum/go-ethereum/eth/protocols/snap"
 	"github.com/ethereum/go-ethereum/p2p"
@@ -29,7 +28,7 @@ import (
 )
 
 // Tests that snap sync is disabled after a successful sync cycle.
-func TestSnapSyncDisabling66(t *testing.T) { testSnapSyncDisabling(t, eth.ETH66, snap.SNAP1) }
+func TestSnapSyncDisabling68(t *testing.T) { testSnapSyncDisabling(t, eth.ETH68, snap.SNAP1) }
 
 // Tests that snap sync gets disabled as soon as a real block is successfully
 // imported into the blockchain.
@@ -37,17 +36,11 @@ func testSnapSyncDisabling(t *testing.T, ethVer uint, snapVer uint) {
 	t.Parallel()
 
 	// Create an empty handler and ensure it's in snap sync mode
-	empty := newTestHandler()
-	if atomic.LoadUint32(&empty.handler.snapSync) == 0 {
-		t.Fatalf("snap sync disabled on pristine blockchain")
-	}
+	empty := newTestHandler(ethconfig.SnapSync)
 	defer empty.close()
 
 	// Create a full handler and ensure snap sync ends up disabled
-	full := newTestHandlerWithBlocks(1024)
-	if atomic.LoadUint32(&full.handler.snapSync) == 1 {
-		t.Fatalf("snap sync not disabled on non-empty blockchain")
-	}
+	full := newTestHandlerWithBlocks(1024, ethconfig.SnapSync)
 	defer full.close()
 
 	// Sync up the two handlers via both `eth` and `snap`
@@ -86,11 +79,20 @@ func testSnapSyncDisabling(t *testing.T, ethVer uint, snapVer uint) {
 	time.Sleep(250 * time.Millisecond)
 
 	// Check that snap sync was disabled
-	op := peerToSyncOp(downloader.SnapSync, empty.handler.peers.peerWithHighestTD())
-	if err := empty.handler.doSync(op); err != nil {
+	if err := empty.handler.downloader.BeaconSync(full.chain.CurrentBlock(), nil); err != nil {
 		t.Fatal("sync failed:", err)
 	}
-	if atomic.LoadUint32(&empty.handler.snapSync) == 1 {
-		t.Fatalf("snap sync not disabled after successful synchronisation")
+	// Downloader internally has to wait for a timer (3s) to be expired before
+	// exiting. Poll after to determine if sync is disabled.
+	time.Sleep(time.Second * 3)
+	for timeout := time.After(time.Second); ; {
+		select {
+		case <-timeout:
+			t.Fatalf("snap sync not disabled after successful synchronisation")
+		case <-time.After(100 * time.Millisecond):
+			if empty.handler.downloader.ConfigSyncMode() == ethconfig.FullSync {
+				return
+			}
+		}
 	}
 }
