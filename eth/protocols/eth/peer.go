@@ -159,11 +159,13 @@ func (p *Peer) MarkTransaction(hash common.Hash) {
 // The reasons this is public is to allow packages using this protocol to write
 // tests that directly send messages without having to do the async queueing.
 func (p *Peer) SendTransactions(txs types.Transactions) error {
-	// Mark all the transactions as known, but ensure we don't overflow our limits
+	if err := p2p.Send(p.rw, TransactionsMsg, txs); err != nil {
+		return err
+	}
 	for _, tx := range txs {
 		p.knownTxs.Add(tx.Hash())
 	}
-	return p2p.Send(p.rw, TransactionsMsg, txs)
+	return nil
 }
 
 // AsyncSendTransactions queues a list of transactions (by hash) to eventually
@@ -249,6 +251,36 @@ func (p *Peer) ReplyReceiptsRLP70(id uint64, receipts rlp.RawList[*ReceiptList],
 		List:                receipts,
 		LastBlockIncomplete: lastBlockIncomplete,
 	})
+}
+
+// ReplyBlockAccessLists is the response to GetBlockAccessLists (EIP-8159).
+func (p *Peer) ReplyBlockAccessLists(id uint64, list rlp.RawList[RawBlockAccessList]) error {
+	return p2p.Send(p.rw, BlockAccessListsMsg, &BlockAccessListPacket{
+		RequestId: id,
+		List:      list,
+	})
+}
+
+// RequestBALs fetches block access lists for the given block hashes (EIP-8159)
+func (p *Peer) RequestBALs(hashes []common.Hash, sink chan *Response) (*Request, error) {
+	p.Log().Debug("Fetching block access lists", "count", len(hashes))
+	id := rand.Uint64()
+
+	req := &Request{
+		id:       id,
+		sink:     sink,
+		code:     GetBlockAccessListsMsg,
+		want:     BlockAccessListsMsg,
+		numItems: len(hashes),
+		data: &GetBlockAccessListsPacket{
+			RequestId:                  id,
+			GetBlockAccessListsRequest: hashes,
+		},
+	}
+	if err := p.dispatchRequest(req); err != nil {
+		return nil, err
+	}
+	return req, nil
 }
 
 // RequestOneHeader is a wrapper around the header query functions to fetch a

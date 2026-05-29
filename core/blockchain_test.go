@@ -160,7 +160,7 @@ func testBlockChainImport(chain types.Blocks, blockchain *BlockChain) error {
 		if err != nil {
 			return err
 		}
-		res, err := blockchain.processor.Process(context.Background(), block, statedb, vm.Config{})
+		res, err := blockchain.processor.Process(context.Background(), block, statedb, nil, vm.Config{})
 		if err != nil {
 			blockchain.reportBadBlock(block, res, err)
 			return err
@@ -3890,7 +3890,7 @@ func TestTransientStorageReset(t *testing.T) {
 		t.Fatalf("failed to insert into chain: %v", err)
 	}
 	// Check the storage
-	state, err := chain.StateAt(chain.CurrentHeader().Root)
+	state, err := chain.StateAt(chain.CurrentHeader())
 	if err != nil {
 		t.Fatalf("Failed to load state %v", err)
 	}

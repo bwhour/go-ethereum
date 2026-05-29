@@ -238,10 +238,12 @@ func ServiceGetBlockBodiesQuery(chain *core.BlockChain, query GetBlockBodiesRequ
 			lookups >= 2*maxBodiesServe {
 			break
 		}
-		if data := chain.GetBodyRLP(hash); len(data) != 0 {
-			bodies = append(bodies, data)
-			bytes += len(data)
+		data := chain.GetBodyRLP(hash)
+		if len(data) == 0 {
+			break // If we don't have this block's body, stop serving.
 		}
+		bodies = append(bodies, data)
+		bytes += len(data)
 	}
 	return bodies
 }
@@ -281,16 +283,16 @@ func ServiceGetReceiptsQuery69(chain *core.BlockChain, query GetReceiptsRequest)
 		// Retrieve the requested block's receipts
 		results := chain.GetReceiptsRLP(hash)
 		if results == nil {
-			continue // Can't retrieve the receipts, so we just skip this block.
+			break // Don't have this block's receipts, stop serving.
 		}
 		body := chain.GetBodyRLP(hash)
 		if body == nil {
-			continue // The block body is missing, we also have to skip.
+			break // The block body is missing, stop serving.
 		}
 		results, _, err := blockReceiptsToNetwork(results, body, receiptQueryParams{})
 		if err != nil {
 			log.Error("Error in block receipts conversion", "hash", hash, "err", err)
-			continue
+			break
 		}
 		receipts.AppendRaw(results)
 		bytes += len(results)
@@ -312,12 +314,13 @@ func serviceGetReceiptsQuery70(chain *core.BlockChain, query GetReceiptsRequest,
 			break
 		}
 		results := chain.GetReceiptsRLP(hash)
+		// If we don't have this block's receipts or body, stop serving.
 		if results == nil {
-			continue // Can't retrieve the receipts, so we just skip this block.
+			break
 		}
 		body := chain.GetBodyRLP(hash)
 		if body == nil {
-			continue // The block body is missing, we also have to skip.
+			break
 		}
 		q := receiptQueryParams{sizeLimit: uint64(maxPacketSize - bytes)}
 		if i == 0 {
@@ -326,7 +329,7 @@ func serviceGetReceiptsQuery70(chain *core.BlockChain, query GetReceiptsRequest,
 		results, incomplete, err := blockReceiptsToNetwork(results, body, q)
 		if err != nil {
 			log.Error("Error in block receipts conversion", "hash", hash, "err", err)
-			continue
+			break
 		}
 		if results == nil {
 			// This case triggers when the first receipt of the block receipts list doesn't
@@ -662,4 +665,69 @@ func handleBlockRangeUpdate(backend Backend, msg Decoder, peer *Peer) error {
 	// We don't do anything with these messages for now, just store them on the peer.
 	peer.lastRange.Store(&update)
 	return nil
+}
+
+// handleGetBlockAccessLists serves a GetBlockAccessLists request.
+func handleGetBlockAccessLists(backend Backend, msg Decoder, peer *Peer) error {
+	var query GetBlockAccessListsPacket
+	if err := msg.Decode(&query); err != nil {
+		return err
+	}
+	response := serviceGetBlockAccessListsQuery(backend.Chain(), query.GetBlockAccessListsRequest)
+	return peer.ReplyBlockAccessLists(query.RequestId, response)
+}
+
+// serviceGetBlockAccessListsQuery assembles the response to a BAL query.
+// Unavailable BALs are returned as empty list entries.
+func serviceGetBlockAccessListsQuery(chain *core.BlockChain, query GetBlockAccessListsRequest) rlp.RawList[RawBlockAccessList] {
+	var (
+		bytes int
+		bals  rlp.RawList[RawBlockAccessList]
+	)
+	for _, hash := range query {
+		if bytes >= softResponseLimit || bals.Len() >= maxBALsServe {
+			break
+		}
+		data := chain.GetAccessListRLP(hash)
+		if len(data) == 0 {
+			// The signal for missing BAL is the empty string, because
+			// an empty list is also a valid BAL.
+			bals.AppendRaw(rlp.EmptyString)
+			continue
+		}
+		bals.AppendRaw(data)
+		bytes += len(data)
+	}
+	return bals
+}
+
+// handleBlockAccessLists processes an incoming BlockAccessLists response,
+// validates it against the request tracker, and dispatches it to the waiting caller.
+func handleBlockAccessLists(backend Backend, msg Decoder, peer *Peer) error {
+	res := new(BlockAccessListPacket)
+	if err := msg.Decode(res); err != nil {
+		return err
+	}
+	tresp := tracker.Response{ID: res.RequestId, MsgCode: BlockAccessListsMsg, Size: res.List.Len()}
+	if err := peer.tracker.Fulfil(tresp); err != nil {
+		return fmt.Errorf("BlockAccessLists: %w", err)
+	}
+	bals, err := res.List.Items()
+	if err != nil {
+		return fmt.Errorf("BlockAccessLists: %w", err)
+	}
+
+	metadata := func() interface{} {
+		hashes := make([]common.Hash, len(bals))
+		for i := range bals {
+			hashes[i] = crypto.Keccak256Hash(bals[i].Bytes())
+		}
+		return hashes
+	}
+
+	return peer.dispatchResponse(&Response{
+		id:   res.RequestId,
+		code: BlockAccessListsMsg,
+		Res:  (*BlockAccessListResponse)(&bals),
+	}, metadata)
 }
